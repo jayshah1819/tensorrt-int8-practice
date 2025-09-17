@@ -1,14 +1,12 @@
 
 
-# TensorRT INT8 Practice –Notes
+# TensorRT INT8 Practice – 
 
-Today I spent time learning about **converting FP32 models to INT8** using TensorRT. Here’s what I learned:
+Today I spent time learning about **converting FP32 models to INT8 using TensorRT**. Here’s what I learned:
 
 ---
 
 ### 1. **TRT Logger**
-
-When we write:
 
 ```python
 TRT_LOGGER = trt.Logger(trt.Logger.INFO)
@@ -16,14 +14,12 @@ TRT_LOGGER = trt.Logger(trt.Logger.INFO)
 
 * TensorRT needs a **logger** to tell us what’s happening.
 * It prints **errors, warnings, and info** during engine building or calibration.
-* There are different levels (ERROR, WARNING, INFO, VERBOSE), and I chose `INFO` because it gives useful messages without being too noisy.
-* Basically, it’s like a “status monitor” for TensorRT.
+* There are different levels (ERROR, WARNING, INFO, VERBOSE). I chose `INFO` because it gives useful messages without being too noisy.
+* Basically, it’s like a **status monitor** for TensorRT.
 
 ---
 
 ### 2. **CUDA Initialization**
-
-In PyCUDA, before doing anything on GPU, we need to **initialize CUDA**:
 
 ```python
 import pycuda.driver as cuda
@@ -32,16 +28,14 @@ device = cuda.Device(0)  # pick GPU 0
 ctx = device.make_context()
 ```
 
-* `pycuda.autoinit` can do this automatically, but I wanted to **manually control it**.
-* Manual init is useful because we can choose the GPU, handle multiple GPUs, and clean up the context when done.
-* Without initializing CUDA, memory allocation or copying data to GPU will fail.
+* PyCUDA requires a **CUDA context** before allocating memory or copying data to the GPU.
+* `pycuda.autoinit` can do this automatically, but I wanted **manual control**.
+* Manual init is useful because you can **choose the GPU, handle multiple GPUs**, and clean up the context when done.
+* Without this, GPU memory allocation or calibration would fail.
 
 ---
 
 ### 3. **Calibration Cache**
-
-* INT8 models need **calibration** to map FP32 values to INT8.
-* TensorRT asks us to implement two functions:
 
 ```python
 def read_calibration_cache(self):
@@ -52,9 +46,10 @@ def write_calibration_cache(self, cache):
         f.write(cache)
 ```
 
-* `read_calibration_cache`: If we already calibrated before, TensorRT can reuse the cached values instead of recalibrating.
-* `write_calibration_cache`: Saves the calibration data so next time we don’t have to run calibration again.
-* This is super useful when working with large datasets — saves time.
+* INT8 models need **calibration** to map FP32 values to INT8.
+* `read_calibration_cache`: Reuses cached calibration data if it exists.
+* `write_calibration_cache`: Saves calibration data for future runs.
+* Super useful when working with large datasets—it **saves time**.
 
 ---
 
@@ -64,21 +59,21 @@ def write_calibration_cache(self, cache):
 self.device_input = cuda.mem_alloc(batch_size * 3 * 640 * 640 * 4)  # float32 size
 ```
 
-* For INT8 calibration, we need to **copy batches of images to the GPU**.
-* Each batch needs memory on the GPU, which we manually allocate using PyCUDA.
-* This helped me understand how **TensorRT interacts with GPU memory**.
+* For INT8 calibration, we copy **batches of images to the GPU**.
+* Each batch needs memory on the GPU, manually allocated.
+* This helped me understand **how TensorRT interacts with GPU memory**.
 
 ---
 
 ### 5. **INT8 Calibration Context (`trt.IInt8EntropyCalibrator2`)**
 
-When doing INT8 calibration, you define a class that inherits from:
+* You define a class that inherits from:
 
 ```python
 trt.IInt8EntropyCalibrator2
 ```
 
-* This class is like a **bridge** between your dataset and TensorRT.
+* Acts as a **bridge between your dataset and TensorRT**.
 * TensorRT calls your class every time it needs a batch for calibration.
 
 ---
@@ -87,39 +82,109 @@ trt.IInt8EntropyCalibrator2
 
 ```python
 def get_batch(self, names):
-    # Ignore 'names', just feed your batch
     if self.current_index + self.batch_size > len(self.data):
-        return None  # no more batches
-
+        return None
     batch = self.data[self.current_index:self.current_index+self.batch_size].ravel()
     cuda.memcpy_htod(self.device_input, batch)
     self.current_index += self.batch_size
-
     return [int(self.device_input)]
 ```
 
-**Key points:**
-
-1. `names` is a **list of input tensor names** for the network.
-
-   * TensorRT passes it so you know which input you are supposed to feed.
-   * For YOLO models, usually there’s only **one input**, e.g., `'images'` or `'input_0'`.
-   * ✅ In almost all cases, you **ignore it**. It’s just required by TensorRT’s function signature.
-
-2. TensorRT only cares that you **return a list of device pointers** matching the input tensors.
+* `names` is a **list of input tensor names**, usually `'images'` or `'input_0'` for YOLO.
+* In almost all cases, you **ignore it**. TensorRT only expects a list of device pointers.
+* This method is where **data actually flows from CPU → GPU** for calibration.
 
 ---
 
-### 7. **What I Realized Today**
+### 7. **TensorRT Builder, Network, and Parser**
 
-* TensorRT needs **a logger, CUDA context, and calibration data** to convert FP32 to INT8.
-* Calibration is essentially “teaching” the engine the range of activations in your dataset.
-* Manual CUDA init gives more control, but `autoinit` is fine for quick experiments.
-* The calibration cache is a huge time saver.
-* The `get_batch` method is where the **data actually flows from CPU to GPU** for calibration, and `names` is mostly just a placeholder in YOLO INT8 calibration.
+**Builder:**
+
+```python
+builder = trt.Builder(TRT_LOGGER)
+```
+
+* The **builder** is responsible for creating the TensorRT engine.
+* It manages settings like **precision mode (FP32, FP16, INT8)** and **workspace memory**.
+
+**Workspace Size:**
+
+```python
+builder.max_workspace_size = 1 << 30
+```
+
+* TensorRT needs **temporary GPU memory** during optimization and engine building.
+* `1 << 30` = 1 GB (1 × 2³⁰ bytes) allocated for workspace.
+* Bigger workspace can allow **better optimizations**, but it must fit in GPU memory.
+
+**INT8 Mode:**
+
+```python
+builder.int8_mode = True
+```
+
+* Enables **INT8 precision** in the engine.
+* Requires a calibrator to teach the network the correct scaling.
+
+**Network:**
+
+```python
+network = builder.create_network(flags=1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+```
+
+* TensorRT requires a **network definition** that describes the model layers.
+* `EXPLICIT_BATCH` flag: the network expects **batch size to be specified at runtime**, not fixed at export.
+* The builder uses this network to build an **optimized engine**.
+
+**Parser:**
+
+```python
+parser = trt.OnnxParser(network, TRT_LOGGER)
+```
+
+* Loads the **ONNX model** into the TensorRT network.
+* Converts ONNX layers → TensorRT layers.
+* After parsing, the network is ready for optimization and engine building.
+
+**Why we build the engine:**
+
+* The **engine** is a GPU-optimized, serialized version of the network.
+* It is ready for **inference at maximum speed**, using FP32, FP16, or INT8 precision.
+* Engine building is where TensorRT applies **layer fusion, kernel selection, memory planning, and precision conversion**.
+
+---
+
+### 8. **Challenges I Faced**
+
+* Figuring out **manual CUDA init vs autoinit**—I had to understand context creation and cleanup.
+* Understanding **get\_batch** and why `names` exists—it’s confusing at first but mostly ignored.
+* Deciding **workspace size**—needed trial and error for large models.
+* Parsing ONNX → TensorRT network—sometimes errors happen due to unsupported ops, so I learned to export ONNX with `simplify=True` and correct opset.
+* INT8 calibration—needed correct preprocessing (normalization, resize, CHW layout) or engine gave wrong results.
+
+---
+
+### 9. **What I Realized Today**
+
+* TensorRT needs **logger, CUDA context, network, builder, parser, and calibration data** to convert FP32 → INT8.
+* Calibration is essentially **teaching the engine activation ranges**.
+* Manual CUDA init gives more control, but autoinit is fine for experiments.
+* Workspace size and engine building are crucial for performance.
+* `get_batch` is where CPU data is sent to GPU for calibration, and `names` is mostly a placeholder.
 
 ---
 
 💡 **Next Steps:**
-Tomorrow I want to try **running a full YOLOv8 FP32 model** and convert it to INT8 with real calibration data. Also want to experiment with `batch_size > 1` for calibration and see how memory allocation works on the GPU.
+
+Next Steps / Roadmap
+
+YOLOv8 FP32 → INT8 Conversion
+Perform full INT8 conversion of the YOLOv8 model using real video calibration data to evaluate performance and accuracy. Experiment with different batch sizes during calibration and optimize the TensorRT workspace size to assess the impact on inference throughput and memory usage.
+
+Fused Preprocessing Kernel
+Develop a single, fused CUDA kernel to eliminate CPU bottlenecks in preprocessing raw 4K video frames. The kernel will perform resizing to model input size (e.g., 640×640), BGR→RGB color conversion, uint8→float32 type conversion, normalization (/255.0), and HWC→CHW tensor layout conversion in a single pass. Benchmark this implementation against sequential library-based preprocessing (e.g., OpenCV-CUDA) targeting at least a 5× speedup.
+
+Real-Time Multi-Model Pipeline
+Integrate multiple models in a real-time AI inference pipeline with custom hardware optimization. Focus on efficient GPU memory management, batching strategies, low-latency preprocessing, and INT8 inference. The goal is to combine the fused preprocessing kernel with INT8 calibrated engines to achieve consistent real-time performance.
+
 
