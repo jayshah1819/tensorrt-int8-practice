@@ -1,8 +1,3 @@
-# tensorrt-int8-practice
-
-Ah! Got it — you want it to sound **natural, like your personal learning notes**, not like a formal AI write-up. Here's a human-friendly version you can put in your repo or personal notes:
-
----
 
 # TensorRT INT8 Practice – Day 3 Notes
 
