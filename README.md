@@ -1,5 +1,6 @@
 
-# TensorRT INT8 Practice – Day 3 Notes
+
+# TensorRT INT8 Practice –Notes
 
 Today I spent time learning about **converting FP32 models to INT8** using TensorRT. Here’s what I learned:
 
@@ -31,7 +32,7 @@ device = cuda.Device(0)  # pick GPU 0
 ctx = device.make_context()
 ```
 
-* I learned that `pycuda.autoinit` can do this automatically, but I wanted to **manually control it**.
+* `pycuda.autoinit` can do this automatically, but I wanted to **manually control it**.
 * Manual init is useful because we can choose the GPU, handle multiple GPUs, and clean up the context when done.
 * Without initializing CUDA, memory allocation or copying data to GPU will fail.
 
@@ -65,21 +66,60 @@ self.device_input = cuda.mem_alloc(batch_size * 3 * 640 * 640 * 4)  # float32 si
 
 * For INT8 calibration, we need to **copy batches of images to the GPU**.
 * Each batch needs memory on the GPU, which we manually allocate using PyCUDA.
-* This part really helped me understand how **TensorRT interacts with GPU memory**.
+* This helped me understand how **TensorRT interacts with GPU memory**.
 
 ---
 
-### 5. **What I Realized Today**
+### 5. **INT8 Calibration Context (`trt.IInt8EntropyCalibrator2`)**
+
+When doing INT8 calibration, you define a class that inherits from:
+
+```python
+trt.IInt8EntropyCalibrator2
+```
+
+* This class is like a **bridge** between your dataset and TensorRT.
+* TensorRT calls your class every time it needs a batch for calibration.
+
+---
+
+### 6. **The `get_batch` method**
+
+```python
+def get_batch(self, names):
+    # Ignore 'names', just feed your batch
+    if self.current_index + self.batch_size > len(self.data):
+        return None  # no more batches
+
+    batch = self.data[self.current_index:self.current_index+self.batch_size].ravel()
+    cuda.memcpy_htod(self.device_input, batch)
+    self.current_index += self.batch_size
+
+    return [int(self.device_input)]
+```
+
+**Key points:**
+
+1. `names` is a **list of input tensor names** for the network.
+
+   * TensorRT passes it so you know which input you are supposed to feed.
+   * For YOLO models, usually there’s only **one input**, e.g., `'images'` or `'input_0'`.
+   * ✅ In almost all cases, you **ignore it**. It’s just required by TensorRT’s function signature.
+
+2. TensorRT only cares that you **return a list of device pointers** matching the input tensors.
+
+---
+
+### 7. **What I Realized Today**
 
 * TensorRT needs **a logger, CUDA context, and calibration data** to convert FP32 to INT8.
 * Calibration is essentially “teaching” the engine the range of activations in your dataset.
 * Manual CUDA init gives more control, but `autoinit` is fine for quick experiments.
 * The calibration cache is a huge time saver.
+* The `get_batch` method is where the **data actually flows from CPU to GPU** for calibration, and `names` is mostly just a placeholder in YOLO INT8 calibration.
 
 ---
 
 💡 **Next Steps:**
 Tomorrow I want to try **running a full YOLOv8 FP32 model** and convert it to INT8 with real calibration data. Also want to experiment with `batch_size > 1` for calibration and see how memory allocation works on the GPU.
-
----
 
